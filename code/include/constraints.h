@@ -37,11 +37,95 @@ public:
     
     /***************************TODO: implement this function**********************/
     
-    //stub implementation
-    correctedCOMVelocities=currCOMVelocities;
-    correctedAngVelocities=currAngVelocities;
-    return true;
+    // Extract positions
+    RowVector3d com1 = currCOMPositions.row(0);
+    RowVector3d com2 = currCOMPositions.row(1);
+    RowVector3d p1 = currVertexPositions.row(0);
+    RowVector3d p2 = currVertexPositions.row(1);
     
+    // Extract velocities
+    RowVector3d v1 = currCOMVelocities.row(0);
+    RowVector3d w1 = currAngVelocities.row(0);
+    RowVector3d v2 = currCOMVelocities.row(1);
+    RowVector3d w2 = currAngVelocities.row(1);
+    
+    // Compute arms from COM to constrained points
+    RowVector3d r1 = p1 - com1;
+    RowVector3d r2 = p2 - com2;
+    
+    // Compute constraint direction (gradient of distance constraint)
+    RowVector3d diff = p2 - p1;
+    double currentDist = diff.norm();
+    if (currentDist < 1e-10) {
+      // Degenerate case
+      correctedCOMVelocities = currCOMVelocities;
+      correctedAngVelocities = currAngVelocities;
+      return true;
+    }
+    RowVector3d n = diff / currentDist;
+    
+    // Compute point velocities at constrained vertices
+    RowVector3d vel1 = v1 + w1.cross(r1);
+    RowVector3d vel2 = v2 + w2.cross(r2);
+    
+    // Relative velocity along constraint direction
+    double vRel = (vel2 - vel1).dot(n);
+    
+    // Check if constraint is already satisfied
+    if (constraintEqualityType == EQUALITY) {
+      if (std::abs(vRel) <= tolerance) {
+        correctedCOMVelocities = currCOMVelocities;
+        correctedAngVelocities = currAngVelocities;
+        return true;
+      }
+    } else {  // INEQUALITY
+      if (isUpper) {
+        // Upper bound constraint: velocity should not increase distance beyond bound
+        if (vRel <= tolerance) {
+          correctedCOMVelocities = currCOMVelocities;
+          correctedAngVelocities = currAngVelocities;
+          return true;
+        }
+      } else {
+        // Lower bound constraint: velocity should not decrease distance below bound
+        if (vRel >= -tolerance) {
+          correctedCOMVelocities = currCOMVelocities;
+          correctedAngVelocities = currAngVelocities;
+          return true;
+        }
+      }
+    }
+    
+    // Constraint is violated, compute correction
+    // Compute the effective mass along the constraint direction
+    RowVector3d r1CrossN = r1.cross(n);
+    RowVector3d r2CrossN = r2.cross(n);
+    
+    double denominator = invMass1 + invMass2 +
+                        r1CrossN.dot(invInertiaTensor1 * r1CrossN.transpose()) +
+                        r2CrossN.dot(invInertiaTensor2 * r2CrossN.transpose());
+    
+    // Compute Lagrange multiplier (impulse magnitude)
+    double lambda = -vRel / denominator;
+    
+    // Apply velocity corrections using impulse = lambda * n
+    RowVector3d impulse = lambda * n;
+    
+    correctedCOMVelocities.resize(2, 3);
+    correctedAngVelocities.resize(2, 3);
+    
+    // Linear velocity corrections
+    correctedCOMVelocities.row(0) = v1 - impulse * invMass1;
+    correctedCOMVelocities.row(1) = v2 + impulse * invMass2;
+    
+    // Angular velocity corrections: delta_w = I^-1 * (r x impulse)
+    RowVector3d torque1 = r1.cross(impulse);
+    RowVector3d torque2 = r2.cross(-impulse);
+    
+    correctedAngVelocities.row(0) = w1 + (invInertiaTensor1 * torque1.transpose()).transpose();
+    correctedAngVelocities.row(1) = w2 + (invInertiaTensor2 * torque2.transpose()).transpose();
+    
+    return false;
   }
   
   //projects the position unto the constraint
@@ -50,9 +134,57 @@ public:
     
     /***************************TODO: implement this function**********************/
     
-    //stub implementation
-    correctedCOMPositions=currCOMPositions;
-    return true;
+    // Extract the two constrained vertex positions
+    RowVector3d p1 = currConstPositions.row(0);
+    RowVector3d p2 = currConstPositions.row(1);
+    
+    // Compute current distance between constrained points
+    RowVector3d diff = p2 - p1;
+    double currentDist = diff.norm();
+    
+    // Check constraint validity based on type
+    double C;  // Constraint function value
+    if (constraintEqualityType == EQUALITY) {
+      C = currentDist - refValue;
+    } else {  // INEQUALITY
+      if (isUpper) {
+        // Upper bound: C = |p2 - p1| - u*d <= tolerance
+        C = currentDist - refValue;
+        if (C <= tolerance) {
+          correctedCOMPositions = currCOMPositions;
+          return true;
+        }
+      } else {
+        // Lower bound: C = |p2 - p1| - l*d >= -tolerance
+        C = currentDist - refValue;
+        if (C >= -tolerance) {
+          correctedCOMPositions = currCOMPositions;
+          return true;
+        }
+      }
+    }
+    
+    // Constraint is violated, need to correct positions
+    // Compute the constraint gradient (normalized direction)
+    RowVector3d n = diff / currentDist;  // Unit vector from p1 to p2
+    
+    // Compute correction magnitude using inverse mass weights
+    double totalInvMass = invMass1 + invMass2;
+    double deltaDist = currentDist - refValue;
+    
+    // Compute position corrections for each COM
+    double w1 = invMass1 / totalInvMass;
+    double w2 = invMass2 / totalInvMass;
+    
+    RowVector3d deltaP1 = w1 * deltaDist * n;
+    RowVector3d deltaP2 = -w2 * deltaDist * n;
+    
+    // Apply corrections to COMs
+    correctedCOMPositions.resize(2, 3);
+    correctedCOMPositions.row(0) = currCOMPositions.row(0) + deltaP1;
+    correctedCOMPositions.row(1) = currCOMPositions.row(1) + deltaP2;
+    
+    return false;
   }
   
 };

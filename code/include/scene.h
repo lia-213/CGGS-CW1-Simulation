@@ -51,14 +51,71 @@ public:
    penPosition: a point on m2 such that if m2 <= m2 + depth*contactNormal, then penPosition+depth*contactNormal is the common contact point
    CRCoeff: the coefficient of restitution
    *********************************************************************/
-  void handle_collision(Mesh& m1, Mesh& m2,const double& depth, const RowVector3d& contactNormal,const RowVector3d& penPosition, const double CRCoeff){
-    
-    
-    /**************TODO: implement this function**************/
-    
+  void handle_collision(Mesh& m1, Mesh& m2, const double& depth, const RowVector3d& contactNormal, const RowVector3d& penPosition, const double CRCoeff) {
+
+    // contactNormal points FROM m1 TO m2 (spec: "measured m1->m2")
+    // penPosition is a point on m2; penPosition + depth*contactNormal = contact point
+    // Ground call: depth=minY<0, n=(0,1,0), penPos=lowest vertex of m1 (which is m2's surface here)
+    // To separate: m1 moves in -contactNormal direction, m2 moves in +contactNormal direction
+
+    double invM1 = m1.isFixed ? 0.0 : m1.totalInvMass;
+    double invM2 = m2.isFixed ? 0.0 : m2.totalInvMass;
+    double sumInvMass = invM1 + invM2;
+
+    if (sumInvMass == 0.0) return;
+
+    double w1 = invM1 / sumInvMass;
+    double w2 = invM2 / sumInvMass;
+
+    // Step 1: Resolve interpenetration
+    // n points m1->m2, so move m1 in -n and m2 in +n to separate
+    // depth<0 for ground (minY), so -w1*depth*n moves m1 upward — correct
+    m1.COM -= w1 * depth * contactNormal;
+    m2.COM += w2 * depth * contactNormal;
+
+    // Contact point after correction
+    RowVector3d contactPoint = penPosition + w2 * depth * contactNormal;
+
+    // Step 2: Resolve velocities
+    RowVector3d r1 = contactPoint - m1.COM;
+    RowVector3d r2 = contactPoint - m2.COM;
+
+    Matrix3d invIT1 = m1.isFixed ? Matrix3d::Zero() : m1.get_curr_inv_IT();
+    Matrix3d invIT2 = m2.isFixed ? Matrix3d::Zero() : m2.get_curr_inv_IT();
+
+    // Velocity at contact point for each body
+    RowVector3d vel1 = m1.comVelocity + m1.angVelocity.cross(r1);
+    RowVector3d vel2 = m2.comVelocity + m2.angVelocity.cross(r2);
+
+    // n points m1->m2:
+    // (v1-v2).n < 0 means m1 moving away from m2 = separating, skip
+    // (v1-v2).n > 0 means m1 moving toward m2 = colliding, apply impulse
+    double vRelNormal = (vel1 - vel2).dot(contactNormal);
+
+    // Already separating — no impulse needed
+    if (vRelNormal <= 0.0) return;
+
+    // Impulse scalar j:
+    // j = -(1+CR)*vRelNormal / (1/m1 + 1/m2 + (r1xn)^T I1^-1 (r1xn) + (r2xn)^T I2^-1 (r2xn))
+    RowVector3d r1CrossN = r1.cross(contactNormal);
+    RowVector3d r2CrossN = r2.cross(contactNormal);
+
+    double rot1 = r1CrossN.dot((invIT1 * r1CrossN.transpose()).transpose());
+    double rot2 = r2CrossN.dot((invIT2 * r2CrossN.transpose()).transpose());
+
+    double denominator = sumInvMass + rot1 + rot2;
+    double j = -(1.0 + CRCoeff) * vRelNormal / denominator;
+
+    RowVector3d impulse = j * contactNormal;
+
+    // n points m1->m2: impulse on m1 is in -n direction (push away from m2)
+    //                  impulse on m2 is in +n direction (push away from m1)
+    m1.comVelocity += invM1 * impulse;
+    m2.comVelocity -= invM2 * impulse;
+
+    m1.angVelocity += (invIT1 * r1.cross(impulse).transpose()).transpose();
+    m2.angVelocity -= (invIT2 * r2.cross(impulse).transpose()).transpose();
   }
-  
-  
   
   /*********************************************************************
    This function handles a single time step by:
