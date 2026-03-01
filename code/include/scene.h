@@ -43,7 +43,7 @@ public:
      *********************************************************************/
     void handle_collision(Mesh& m1, Mesh& m2, const double& depth, const RowVector3d& contactNormal, const RowVector3d& penPosition, const double CRCoeff) {
 
-        // 1. Standardize normal: ensure depth > 0, n points from m2 into m1
+        // n points from m1 into m2 (CCD convention). Ensure d > 0.
         double d = depth;
         RowVector3d n = contactNormal;
         if (d < 0) {
@@ -57,24 +57,26 @@ public:
 
         if (sumInvMass == 0.0) return;
 
-        // 2. Resolve interpenetration: push m1 in +n, m2 in -n
-        double w1 = invM1 / sumInvMass;
-        double w2 = invM2 / sumInvMass;
-        m1.COM += w1 * d * n;
-        m2.COM -= w2 * d * n;
+        // penPosition was adjusted in is_collide: pos -= depth*n/2
+        // Recover the original CCD midpoint contact position
+        RowVector3d contactPoint = penPosition + d * n / 2.0;
 
-        // 3. Resolve velocities via impulse
-        RowVector3d contactPoint = penPosition - w2 * d * n;
+        // Compute moment arms from original COMs to the contact point
         RowVector3d r1 = contactPoint - m1.COM;
         RowVector3d r2 = contactPoint - m2.COM;
 
+        // Velocity of each body at the contact point
         RowVector3d v1 = m1.comVelocity + m1.angVelocity.cross(r1);
         RowVector3d v2 = m2.comVelocity + m2.angVelocity.cross(r2);
 
-        // n points m2->m1; vRelNormal > 0 means bodies are approaching
+        // n points m1->m2; vRelNormal > 0 means bodies approaching
         double vRelNormal = (v1 - v2).dot(n);
 
-        if (vRelNormal <= 0.0) return;
+        // Resolve interpenetration: push m1 back along -n, m2 forward along +n
+        double w1 = invM1 / sumInvMass;
+        double w2 = invM2 / sumInvMass;
+        m1.COM -= w1 * d * n;
+        m2.COM += w2 * d * n;
 
         Matrix3d invIT1 = m1.isFixed ? Matrix3d::Zero() : m1.get_curr_inv_IT();
         Matrix3d invIT2 = m2.isFixed ? Matrix3d::Zero() : m2.get_curr_inv_IT();
@@ -87,15 +89,16 @@ public:
 
         double denominator = sumInvMass + rot1 + rot2;
 
-        // j > 0: impulse pushes m1 in +n, m2 in -n
+        // Standard collision impulse   
         double j = (1.0 + CRCoeff) * vRelNormal / denominator;
         RowVector3d impulse = j * n;
 
-        m1.comVelocity += invM1 * impulse;
-        m2.comVelocity -= invM2 * impulse;
+        // m1 pushed back along -n, m2 pushed forward along +n
+        m1.comVelocity -= invM1 * impulse;
+        m2.comVelocity += invM2 * impulse;
 
-        m1.angVelocity += (invIT1 * r1.cross(impulse).transpose()).transpose();
-        m2.angVelocity -= (invIT2 * r2.cross(impulse).transpose()).transpose();
+        m1.angVelocity -= (invIT1 * r1.cross(impulse).transpose()).transpose();
+        m2.angVelocity += (invIT2 * r2.cross(impulse).transpose()).transpose();
     }
 
     /*********************************************************************
