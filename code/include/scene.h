@@ -23,8 +23,6 @@ using namespace std;
 // whose AABBs share at least one grid cell.
 static vector<pair<int,int>> broad_phase_pairs(const vector<Mesh>& meshes, double cellSize)
 {
-    // Map each occupied cell -> list of mesh indices
-    // Key: (cx, cy, cz) packed into a single int64
     struct CellHash {
         size_t operator()(tuple<int,int,int> const& k) const {
             size_t h = 2166136261u;
@@ -50,7 +48,6 @@ static vector<pair<int,int>> broad_phase_pairs(const vector<Mesh>& meshes, doubl
                     grid[{cx, cy, cz}].push_back(i);
     }
 
-    // Collect unique pairs
     unordered_set<long long> seen;
     vector<pair<int,int>> pairs;
     int n = (int)meshes.size();
@@ -100,8 +97,6 @@ public:
     {
         int nc = (int)constraints.size();
         constraintAdjacency.assign(nc, {});
-        // Group constraints by mesh index
-        // mesh -> list of constraint indices that involve it
         unordered_map<int, vector<int>> meshToConstraints;
         for (int i = 0; i < nc; i++) {
             meshToConstraints[constraints[i].m1].push_back(i);
@@ -136,7 +131,6 @@ public:
      *********************************************************************/
     void handle_collision(Mesh& m1, Mesh& m2, const double& depth, const RowVector3d& contactNormal, const RowVector3d& penPosition, const double CRCoeff) {
 
-        // n points from m1 into m2 (CCD convention). Ensure d > 0.
         double d = depth;
         RowVector3d n = contactNormal;
         if (d < 0) {
@@ -150,22 +144,16 @@ public:
 
         if (sumInvMass == 0.0) return;
 
-        // penPosition was adjusted in is_collide: pos -= depth*n/2
-        // Recover the original CCD midpoint contact position
         RowVector3d contactPoint = penPosition + d * n / 2.0;
 
-        // Compute moment arms from original COMs to the contact point
         RowVector3d r1 = contactPoint - m1.COM;
         RowVector3d r2 = contactPoint - m2.COM;
 
-        // Velocity of each body at the contact point
         RowVector3d v1 = m1.comVelocity + m1.angVelocity.cross(r1);
         RowVector3d v2 = m2.comVelocity + m2.angVelocity.cross(r2);
 
-        // n points m1->m2; vRelNormal > 0 means bodies approaching
         double vRelNormal = (v1 - v2).dot(n);
 
-        // Resolve interpenetration: push m1 back along -n, m2 forward along +n
         double w1 = invM1 / sumInvMass;
         double w2 = invM2 / sumInvMass;
         m1.COM -= w1 * d * n;
@@ -182,11 +170,9 @@ public:
 
         double denominator = sumInvMass + rot1 + rot2;
 
-        // Standard collision impulse   
         double j = (1.0 + CRCoeff) * vRelNormal / denominator;
         RowVector3d impulse = j * n;
 
-        // m1 pushed back along -n, m2 pushed forward along +n
         m1.comVelocity -= invM1 * impulse;
         m2.comVelocity += invM2 * impulse;
 
@@ -205,7 +191,6 @@ public:
 
         // 2. Detect and Handle Mesh-Mesh Collisions (broad-phase grid)
         {
-            // Estimate a reasonable cell size from average AABB diagonal
             double cellSize = 1.0;
             if (!meshes.empty()) {
                 double sumDiag = 0.0;
@@ -219,7 +204,6 @@ public:
 
             int n = (int)meshes.size();
 
-            // Build candidate pair list — either naïve O(n²) or spatial hash
             auto t0 = chrono::high_resolution_clock::now();
             vector<pair<int,int>> pairList;
             if (useNaive) {
@@ -232,7 +216,6 @@ public:
             auto t1 = chrono::high_resolution_clock::now();
             double stepMs = chrono::duration<double, milli>(t1 - t0).count();
 
-            // Accumulate stats
             long long naivePairs = (long long)n * (n - 1) / 2;
             statsStepCount++;
             statsBroadPhaseMs += stepMs;
@@ -280,12 +263,9 @@ public:
         if (!constraints.empty()) {
             int nc = (int)constraints.size();
 
-            // inQueue[i] = true if constraint i is currently queued
             vector<bool> inQueue(nc, true);
-            // violationCount[i] = how many times constraint i has been processed
             vector<int> violationCount(nc, 0);
 
-            // Start with all constraints dirty
             queue<int> dirtyQueue;
             for (int i = 0; i < nc; i++)
                 dirtyQueue.push(i);
@@ -338,7 +318,6 @@ public:
                         meshes[currConstraint.m2].angVelocity = correctedAngVelocities.row(1);
                     }
 
-                    // Re-queue all constraints that share a mesh with this one
                     for (int neighbour : constraintAdjacency[ci]) {
                         if (!inQueue[neighbour]) {
                             inQueue[neighbour] = true;
@@ -416,7 +395,6 @@ public:
             constEdges.row(i) << 2 * i, 2 * i + 1;
         }
 
-        // Build adjacency after all constraints are loaded
         build_constraint_adjacency();
 
         return true;

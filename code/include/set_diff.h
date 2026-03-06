@@ -18,7 +18,6 @@ Eigen::VectorXi set_diff(const Eigen::VectorXi& A,
         }
     }
     
-    // Convert result to Eigen::VectorXi
     Eigen::VectorXi diff(result.size());
     for (size_t i = 0; i < result.size(); ++i) {
         diff[i] = result[i];

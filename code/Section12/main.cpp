@@ -67,7 +67,6 @@ void callback_function() {
   pMesh->updateVertexPositions(scene.currV);
   pConstraints->updateNodePositions(scene.currConstVertices);
 
-  // Detect first floor contact: colour touching meshes red
   Eigen::MatrixXd vertexColors = Eigen::MatrixXd::Ones(scene.currV.rows(), 3) * 0.7;
   int offset = 0;
   for (int i = 0; i < (int)scene.meshes.size(); i++) {
@@ -86,12 +85,10 @@ void callback_function() {
   }
   pMesh->addVertexColorQuantity("contact", vertexColors)->setEnabled(true);
 
-  // Record trails and redraw
   if (showTrails) {
     for (int i = 0; i < (int)scene.meshes.size(); i++)
       comTrails[i].push_back(scene.meshes[i].COM);
 
-    // Build a single curve network from all trails
     int totalPts = 0;
     for (auto& t : comTrails) totalPts += (int)t.size();
 
@@ -136,7 +133,6 @@ int main()
   polyscope::init();
   scene.update_scene(0.0, CRCoeff, maxIterations, tolerance);
 
-  // Visualization
   pMesh = polyscope::registerSurfaceMesh("Entire Scene", scene.currV, scene.allF);
   pConstraints = polyscope::registerCurveNetwork("Constraints", scene.currConstVertices, scene.constEdges);
   polyscope::options::groundPlaneHeightMode = polyscope::GroundPlaneHeightMode::Manual;

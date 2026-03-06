@@ -130,10 +130,7 @@ public:
     if (isFixed)
       return Matrix3d::Zero();
     
-    // Get rotation matrix from current orientation quaternion
     Matrix3d R = Q2RotMatrix(orientation);
-    
-    // Rotate the inverse inertia tensor: R * invIT * R^T
     return R * invIT * R.transpose();
   }
   
@@ -145,22 +142,14 @@ public:
     if (isFixed)
       return;
     
-    // Update COM position using linear velocity
     COM += comVelocity * timeStep;
     
-    // Update orientation using angular velocity
-    // The quaternion derivative is: q' = 0.5 * (0, omega) * q
-    // Integration: q(t+dt) = q(t) + 0.5 * dt * (0, omega) * q(t)
-    // Using exponential map: q(t+dt) = exp(0.5 * dt * (0, omega)) * q(t)
     RowVector4d angVelQuat;
     angVelQuat << 0.0, angVelocity;
     RowVector4d halfDeltaQ = QExp(angVelQuat * (0.5 * timeStep));
     orientation = QMult(halfDeltaQ, orientation);
-    
-    // Normalize the orientation quaternion to prevent drift
     orientation.normalize();
     
-    // Update currV to reflect new positions
     for (int i = 0; i < currV.rows(); i++)
       currV.row(i) = QRot(origV.row(i), orientation) + COM;
   }
@@ -174,14 +163,8 @@ public:
     if (isFixed)
       return;
     
-    // Apply gravity acceleration: g = (0, -9.8, 0)
     RowVector3d gravity(0.0, -9.8, 0.0);
-    
-    // Semi-implicit Euler: v(t+dt) = v(t) + a * dt
     comVelocity += gravity * timeStep;
-    
-    // Angular velocity is not affected by gravity (no torque from uniform gravity field)
-    // angVelocity remains unchanged
   }
   
   

@@ -43,7 +43,7 @@ Eigen::MatrixXd random_vectors_in_sphere(double radius, int num_samples) {
   for (int i = 0; i < num_samples; ++i) {
     double theta = theta_dist(gen);
     double phi = phi_dist(gen);
-    double r = radius * std::cbrt(r_dist(gen)); // cubic root to ensure uniform distribution
+    double r = radius * std::cbrt(r_dist(gen));
     
     double x = r * std::sin(theta) * std::cos(phi);
     double y = r * std::sin(theta) * std::sin(phi);

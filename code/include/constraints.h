@@ -41,7 +41,6 @@ public:
     RowVector3d r1 = p1 - com1;
     RowVector3d r2 = p2 - com2;
     
-    // n = unit vector from p1 to p2 (direction of increasing distance)
     RowVector3d diff = p2 - p1;
     double currentDist = diff.norm();
     if (currentDist < 1e-10) {
@@ -51,14 +50,10 @@ public:
     }
     RowVector3d n = diff / currentDist;
     
-    // C = |p2 - p1| - refValue
-    // Cdot = (vel2 - vel1).dot(n): rate of distance increase (positive = separating)
     RowVector3d vel1 = v1 + w1.cross(r1);
     RowVector3d vel2 = v2 + w2.cross(r2);
     double Cdot = (vel2 - vel1).dot(n);
     
-    // The velocity constraint always targets Cdot = 0 (zero relative velocity along n).
-    // Return valid only if Cdot is already zero within tolerance.
     if (std::abs(Cdot) <= tolerance) {
       correctedCOMVelocities = currCOMVelocities;
       correctedAngVelocities = currAngVelocities;
@@ -73,21 +68,16 @@ public:
                          r1CrossN.dot((invInertiaTensor1 * r1CrossN.transpose()).transpose()) +
                          r2CrossN.dot((invInertiaTensor2 * r2CrossN.transpose()).transpose());
     
-    // lambda = -Cdot / denominator
     double lambda = -Cdot / denominator;
     RowVector3d impulse = lambda * n;
     
     correctedCOMVelocities.resize(2, 3);
     correctedAngVelocities.resize(2, 3);
     
-    // Body 1: J1 = -n, so dv1 = -invMass1 * impulse
     correctedCOMVelocities.row(0) = v1 - invMass1 * impulse;
-    // Body 2: J2 = +n, so dv2 = +invMass2 * impulse
     correctedCOMVelocities.row(1) = v2 + invMass2 * impulse;
     
-    // dw1 = -I1_inv * (r1 x impulse)
     correctedAngVelocities.row(0) = w1 - (invInertiaTensor1 * r1.cross(impulse).transpose()).transpose();
-    // dw2 = +I2_inv * (r2 x impulse)
     correctedAngVelocities.row(1) = w2 + (invInertiaTensor2 * r2.cross(impulse).transpose()).transpose();
     
     return false;
@@ -101,10 +91,8 @@ public:
     RowVector3d diff = p2 - p1;
     double currentDist = diff.norm();
     
-    // C = |p2 - p1| - refValue
     double C = currentDist - refValue;
     
-    // Check constraint validity
     if (constraintEqualityType == EQUALITY) {
       if (std::abs(C) <= tolerance) {
         correctedCOMPositions = currCOMPositions;
@@ -112,13 +100,11 @@ public:
       }
     } else {
       if (isUpper) {
-        // Cu: distance <= refValue  =>  C <= 0 is valid
         if (C <= tolerance) {
           correctedCOMPositions = currCOMPositions;
           return true;
         }
       } else {
-        // Cl: distance >= refValue  =>  C >= 0 is valid
         if (C >= -tolerance) {
           correctedCOMPositions = currCOMPositions;
           return true;
@@ -126,16 +112,12 @@ public:
       }
     }
     
-    // n = unit vector from p1 to p2
     RowVector3d n = diff / currentDist;
     
     double totalInvMass = invMass1 + invMass2;
     double wt1 = invMass1 / totalInvMass;
     double wt2 = invMass2 / totalInvMass;
     
-    // Project COMs by C along n:
-    // COM1 += wt1 * C * n  (moves p1 toward p2 when C > 0)
-    // COM2 -= wt2 * C * n  (moves p2 toward p1 when C > 0)
     correctedCOMPositions.resize(2, 3);
     correctedCOMPositions.row(0) = currCOMPositions.row(0) + wt1 * C * n;
     correctedCOMPositions.row(1) = currCOMPositions.row(1) - wt2 * C * n;
