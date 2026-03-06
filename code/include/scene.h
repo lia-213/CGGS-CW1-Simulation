@@ -3,6 +3,12 @@
 
 #include <vector>
 #include <fstream>
+#include <unordered_map>
+#include <unordered_set>
+#include <queue>
+#include <tuple>
+#include <chrono>
+#include <iomanip>
 #include "ccd.h"
 #include "volInt.h"
 #include "auxfunctions.h"
@@ -12,6 +18,55 @@
 
 using namespace Eigen;
 using namespace std;
+
+// Uniform-grid broad-phase: returns candidate pairs (i,j) with i < j
+// whose AABBs share at least one grid cell.
+static vector<pair<int,int>> broad_phase_pairs(const vector<Mesh>& meshes, double cellSize)
+{
+    // Map each occupied cell -> list of mesh indices
+    // Key: (cx, cy, cz) packed into a single int64
+    struct CellHash {
+        size_t operator()(tuple<int,int,int> const& k) const {
+            size_t h = 2166136261u;
+            auto mix = [&](int v){ h ^= (size_t)(unsigned int)v; h *= 16777619u; };
+            mix(get<0>(k)); mix(get<1>(k)); mix(get<2>(k));
+            return h;
+        }
+    };
+    unordered_map<tuple<int,int,int>, vector<int>, CellHash> grid;
+
+    for (int i = 0; i < (int)meshes.size(); i++) {
+        RowVector3d bMin = meshes[i].currV.colwise().minCoeff();
+        RowVector3d bMax = meshes[i].currV.colwise().maxCoeff();
+        int x0 = (int)floor(bMin(0) / cellSize);
+        int y0 = (int)floor(bMin(1) / cellSize);
+        int z0 = (int)floor(bMin(2) / cellSize);
+        int x1 = (int)floor(bMax(0) / cellSize);
+        int y1 = (int)floor(bMax(1) / cellSize);
+        int z1 = (int)floor(bMax(2) / cellSize);
+        for (int cx = x0; cx <= x1; cx++)
+            for (int cy = y0; cy <= y1; cy++)
+                for (int cz = z0; cz <= z1; cz++)
+                    grid[{cx, cy, cz}].push_back(i);
+    }
+
+    // Collect unique pairs
+    unordered_set<long long> seen;
+    vector<pair<int,int>> pairs;
+    int n = (int)meshes.size();
+    for (auto& [cell, indices] : grid) {
+        for (int a = 0; a < (int)indices.size(); a++) {
+            for (int b = a + 1; b < (int)indices.size(); b++) {
+                int i = indices[a], j = indices[b];
+                if (i > j) swap(i, j);
+                long long key = (long long)i * n + j;
+                if (seen.insert(key).second)
+                    pairs.emplace_back(i, j);
+            }
+        }
+    }
+    return pairs;
+}
 
 // This class contains the entire scene operations, and the engine time loop.
 class Scene {
@@ -24,6 +79,44 @@ public:
     // Mostly for visualization
     MatrixXi allF, constEdges;
     MatrixXd currV, currConstVertices;
+
+    // Adjacency list: constraintAdjacency[i] = set of constraint indices
+    // that share at least one mesh with constraint i.
+    vector<vector<int>> constraintAdjacency;
+
+    // Toggle: true = real O(n²) naïve loop, false = spatial hash
+    bool useNaive = false;
+
+    // Timing / stats accumulators (reset every printInterval steps)
+    int      statsStepCount      = 0;
+    double   statsBroadPhaseMs   = 0.0;
+    double   statsNaiveMs        = 0.0;
+    long long statsBroadPairs    = 0;
+    long long statsNaivePairs    = 0;
+    static constexpr int printInterval = 10;
+
+    // Rebuild the constraint adjacency list (call after loading constraints).
+    void build_constraint_adjacency()
+    {
+        int nc = (int)constraints.size();
+        constraintAdjacency.assign(nc, {});
+        // Group constraints by mesh index
+        // mesh -> list of constraint indices that involve it
+        unordered_map<int, vector<int>> meshToConstraints;
+        for (int i = 0; i < nc; i++) {
+            meshToConstraints[constraints[i].m1].push_back(i);
+            meshToConstraints[constraints[i].m2].push_back(i);
+        }
+        for (int i = 0; i < nc; i++) {
+            unordered_set<int> neighbours;
+            for (int m : {constraints[i].m1, constraints[i].m2}) {
+                for (int j : meshToConstraints[m]) {
+                    if (j != i) neighbours.insert(j);
+                }
+            }
+            constraintAdjacency[i].assign(neighbours.begin(), neighbours.end());
+        }
+    }
 
     // Adding objects. You do not need to update this generally.
     void add_mesh(const MatrixXd& V, const MatrixXi& F, const MatrixXi& T, const double density, const bool isFixed, const RowVector3d& COM, const RowVector4d& orientation) {
@@ -107,14 +200,65 @@ public:
     void update_scene(double timeStep, double CRCoeff, int maxIterations, double tolerance) {
 
         // 1. Integrate
-        for (int i = 0; i < meshes.size(); i++)
+        for (int i = 0; i < (int)meshes.size(); i++)
             meshes[i].integrate(timeStep);
 
-        // 2. Detect and Handle Mesh-Mesh Collisions
-        double depth;
-        RowVector3d contactNormal, penPosition;
-        for (int i = 0; i < meshes.size(); i++) {
-            for (int j = i + 1; j < meshes.size(); j++) {
+        // 2. Detect and Handle Mesh-Mesh Collisions (broad-phase grid)
+        {
+            // Estimate a reasonable cell size from average AABB diagonal
+            double cellSize = 1.0;
+            if (!meshes.empty()) {
+                double sumDiag = 0.0;
+                for (auto& m : meshes) {
+                    RowVector3d diag = m.currV.colwise().maxCoeff() - m.currV.colwise().minCoeff();
+                    sumDiag += diag.norm();
+                }
+                cellSize = (sumDiag / meshes.size()) * 2.0;
+                if (cellSize < 1e-6) cellSize = 1.0;
+            }
+
+            int n = (int)meshes.size();
+
+            // Build candidate pair list — either naïve O(n²) or spatial hash
+            auto t0 = chrono::high_resolution_clock::now();
+            vector<pair<int,int>> pairList;
+            if (useNaive) {
+                for (int ii = 0; ii < n; ii++)
+                    for (int jj = ii + 1; jj < n; jj++)
+                        pairList.emplace_back(ii, jj);
+            } else {
+                pairList = broad_phase_pairs(meshes, cellSize);
+            }
+            auto t1 = chrono::high_resolution_clock::now();
+            double stepMs = chrono::duration<double, milli>(t1 - t0).count();
+
+            // Accumulate stats
+            long long naivePairs = (long long)n * (n - 1) / 2;
+            statsStepCount++;
+            statsBroadPhaseMs += stepMs;
+            statsBroadPairs   += (long long)pairList.size();
+            statsNaivePairs   += naivePairs;
+
+            if (statsStepCount >= printInterval) {
+                double avgMs        = statsBroadPhaseMs / statsStepCount;
+                long long avgPairs      = statsBroadPairs  / statsStepCount;
+                long long avgNaive      = statsNaivePairs  / statsStepCount;
+                cout << fixed << setprecision(3)
+                     << "[BroadPhase | n=" << n
+                     << " | " << (useNaive ? "NAIVE" : "SPATIAL") << "] "
+                     << avgMs << "ms (" << avgPairs << " pairs"
+                     << ", naive=" << avgNaive << ")"
+                     << " avg/" << statsStepCount << " steps\n";
+                statsStepCount    = 0;
+                statsBroadPhaseMs = 0.0;
+                statsNaiveMs      = 0.0;
+                statsBroadPairs   = 0;
+                statsNaivePairs   = 0;
+            }
+
+            double depth;
+            RowVector3d contactNormal, penPosition;
+            for (auto& [i, j] : pairList) {
                 if (meshes[i].is_collide(meshes[j], depth, contactNormal, penPosition)) {
                     handle_collision(meshes[i], meshes[j], depth, contactNormal, penPosition, CRCoeff);
                 }
@@ -122,7 +266,7 @@ public:
         }
 
         // 3. Detect and Handle Ground Collisions
-        for (int i = 0; i < meshes.size(); i++) {
+        for (int i = 0; i < (int)meshes.size(); i++) {
             int minyIndex;
             double minY = meshes[i].currV.col(1).minCoeff(&minyIndex);
             if (minY <= 0.0) {
@@ -132,13 +276,30 @@ public:
             }
         }
 
-        // 4. Resolve Constraints
-        int currIteration = 0;
-        int zeroStreak = 0;
-        int currConstIndex = 0;
-        if (constraints.size() > 0) {
-            while ((zeroStreak < constraints.size()) && (currIteration * constraints.size() < maxIterations)) {
-                Constraint& currConstraint = constraints[currConstIndex];
+        // 4. Resolve Constraints (sparse dirty-queue scheduling)
+        if (!constraints.empty()) {
+            int nc = (int)constraints.size();
+
+            // inQueue[i] = true if constraint i is currently queued
+            vector<bool> inQueue(nc, true);
+            // violationCount[i] = how many times constraint i has been processed
+            vector<int> violationCount(nc, 0);
+
+            // Start with all constraints dirty
+            queue<int> dirtyQueue;
+            for (int i = 0; i < nc; i++)
+                dirtyQueue.push(i);
+
+            int totalProcessed = 0;
+            int maxTotal = maxIterations * nc;
+
+            while (!dirtyQueue.empty() && totalProcessed < maxTotal) {
+                int ci = dirtyQueue.front();
+                dirtyQueue.pop();
+                inQueue[ci] = false;
+                totalProcessed++;
+
+                Constraint& currConstraint = constraints[ci];
 
                 RowVector3d origConstPos1 = meshes[currConstraint.m1].origV.row(currConstraint.v1);
                 RowVector3d origConstPos2 = meshes[currConstraint.m2].origV.row(currConstraint.v2);
@@ -152,11 +313,7 @@ public:
                 MatrixXd correctedCOMPositions;
                 bool positionWasValid = currConstraint.resolve_position_constraint(currCOMPositions, currConstPositions, correctedCOMPositions, tolerance);
 
-                if (positionWasValid) {
-                    zeroStreak++;
-                }
-                else {
-                    zeroStreak = 0;
+                if (!positionWasValid) {
                     meshes[currConstraint.m1].COM = correctedCOMPositions.row(0);
                     meshes[currConstraint.m2].COM = correctedCOMPositions.row(1);
 
@@ -180,30 +337,36 @@ public:
                         meshes[currConstraint.m1].angVelocity = correctedAngVelocities.row(0);
                         meshes[currConstraint.m2].angVelocity = correctedAngVelocities.row(1);
                     }
-                }
-                currIteration++;
-                currConstIndex = (currConstIndex + 1) % (constraints.size());
-            }
-        }
 
-        if (constraints.size() > 0 && currIteration * constraints.size() >= maxIterations)
-            cout << "Constraint resolution reached maxIterations!" << endl;
+                    // Re-queue all constraints that share a mesh with this one
+                    for (int neighbour : constraintAdjacency[ci]) {
+                        if (!inQueue[neighbour]) {
+                            inQueue[neighbour] = true;
+                            dirtyQueue.push(neighbour);
+                        }
+                    }
+                }
+            }
+
+            if (totalProcessed >= maxTotal)
+                cout << "Constraint resolution reached maxIterations!" << endl;
+        }
 
         currTime += timeStep;
 
         // 5. Final Visual Update
-        for (int i = 0; i < meshes.size(); i++) {
+        for (int i = 0; i < (int)meshes.size(); i++) {
             for (int j = 0; j < meshes[i].currV.rows(); j++) {
                 meshes[i].currV.row(j) << QRot(meshes[i].origV.row(j), meshes[i].orientation) + meshes[i].COM;
             }
         }
 
         int currVOffset = 0;
-        for (int i = 0; i < meshes.size(); i++) {
+        for (int i = 0; i < (int)meshes.size(); i++) {
             currV.block(currVOffset, 0, meshes[i].currV.rows(), 3) = meshes[i].currV;
             currVOffset += meshes[i].currV.rows();
         }
-        for (int i = 0; i < constraints.size(); i += 2) {
+        for (int i = 0; i < (int)constraints.size(); i += 2) {
             currConstVertices.row(i) = meshes[constraints[i].m1].currV.row(constraints[i].v1);
             currConstVertices.row(i + 1) = meshes[constraints[i].m2].currV.row(constraints[i].v2);
         }
@@ -252,6 +415,10 @@ public:
             currConstVertices.row(2 * i + 1) = meshes[attachM2].currV.row(attachV2);
             constEdges.row(i) << 2 * i, 2 * i + 1;
         }
+
+        // Build adjacency after all constraints are loaded
+        build_constraint_adjacency();
+
         return true;
     }
 

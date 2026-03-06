@@ -33,6 +33,7 @@ void callback_function() {
   ImGui::TextUnformatted("Animation Parameters");
   ImGui::Separator();
   bool changed = ImGui::Checkbox("isAnimating", &isAnimating);
+  ImGui::Checkbox("Naive O(n^2) broad-phase", &scene.useNaive);
   ImGui::PopItemWidth();
   if (!isAnimating)
     return;
@@ -47,7 +48,7 @@ void callback_function() {
 int main()
 {
   
-  scene.load_scene("two_cylinder-scene.txt","no-constraints.txt");
+  scene.load_scene("two_chain-scene.txt","two_chain-constraints.txt");
   polyscope::init();
   
   scene.update_scene(0.0, CRCoeff, maxIterations, tolerance);
