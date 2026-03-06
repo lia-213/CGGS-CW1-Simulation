@@ -120,15 +120,17 @@ void callback_function() {
 int main()
 {
   
-  scene.load_scene("mixed-scene.txt","no-constraints.txt");
+  scene.load_scene("demo-spin-scene.txt","no-constraints.txt");
 
-  // Give each object a different lateral velocity so paths trace visible parabolas
-  for (int i = 0; i < (int)scene.meshes.size(); i++) {
-    double vx = (i % 2 == 0 ? 1.0 : -1.0) * (3.0 + i * 1.5);
-    double vz = (i % 3 == 0 ? 1.0 : -1.0) * 2.0;
-    scene.meshes[i].comVelocity = RowVector3d(vx, 0.0, vz);
-  }
+  // Give each object a different lateral velocity so paths trace visible parabolas - specifically for fig1 with mixed-scene.txt
+  // for (int i = 0; i < (int)scene.meshes.size(); i++) {
+  //   double vx = (i % 2 == 0 ? 1.0 : -1.0) * (3.0 + i * 1.5);
+  //   double vz = (i % 3 == 0 ? 1.0 : -1.0) * 2.0;
+  //   scene.meshes[i].comVelocity = RowVector3d(vx, 0.0, vz);
+  // }
   comTrails.resize(scene.meshes.size());
+
+  scene.meshes[0].comVelocity = RowVector3d(15.0, 0.0, 0.0);
 
   polyscope::init();
   scene.update_scene(0.0, CRCoeff, maxIterations, tolerance);
