@@ -130,6 +130,7 @@ int main()
   // }
   comTrails.resize(scene.meshes.size());
 
+  // for demo-spin-scene.txt for spinning artefact from angular impulse
   scene.meshes[0].comVelocity = RowVector3d(15.0, 0.0, 0.0);
 
   polyscope::init();
